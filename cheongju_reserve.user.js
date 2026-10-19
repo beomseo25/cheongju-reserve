@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         청주 통합예약 - 흥덕축구공원 예약 도우미 (prototype)
 // @namespace    local.cheongju.reserve
-// @version      0.8
+// @version      0.8.1
 // @description  접수 시각(서버시간)에 맞춰 달의 모든 지정 요일을 날짜마다 창 1개씩 병렬로 자동 신청 (순번대기 대응)
 // @match        https://ticket.cheongju.go.kr/www/*
 // @run-at       document-start
