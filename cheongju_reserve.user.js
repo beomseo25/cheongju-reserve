@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         청주 통합예약 - 흥덕축구공원 예약 도우미 (prototype)
 // @namespace    local.cheongju.reserve
-// @version      0.7
+// @version      0.7.2
 // @description  접수 시각(서버시간)에 맞춰 달의 모든 지정 요일을 날짜마다 탭 1개씩 병렬로 자동 신청
 // @match        https://ticket.cheongju.go.kr/www/*
 // @run-at       document-end
@@ -197,6 +197,13 @@
     const m = pageText().match(/접수기간\s*(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
     return m ? new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00+09:00`).getTime() : 0;
   };
+  // '11' 처럼 월만 적어도 허용 (가장 가까운 미래의 그 달로 해석)
+  const normMonth = v => {
+    v = String(v).trim();
+    if (/^\d{4}-\d{1,2}$/.test(v)) { const [y, m] = v.split('-'); return `${y}-${String(+m).padStart(2, '0')}`; }
+    if (/^\d{1,2}$/.test(v)) { const n = new Date(), y = n.getFullYear() + (+v < n.getMonth() + 1 ? 1 : 0); return `${y}-${String(+v).padStart(2, '0')}`; }
+    return v;
+  };
   const parseMonth = () => { const m = pageText().match(/시설예약기간\s*(\d{4})-(\d{2})-\d{2}/); return m ? `${m[1]}-${m[2]}` : ''; };
   const resolveOpenAt = () => CFG.OPEN_AT === 'auto' ? parseOpenAt() : (CFG.OPEN_AT ? new Date(CFG.OPEN_AT.replace(' ', 'T') + '+09:00').getTime() : 0);
   function datesFor(month) {
@@ -219,7 +226,7 @@
   addBtn('중지(전체)', () => { setState({ ...(getState() || {}), armed: false }); localStorage.setItem(STOP_KEY, String(Date.now())); log('중지됨 (모든 탭)'); });
   if (path.endsWith('selectFcltyWebView.do') && ROLE !== 'child') {
     addBtn('▶ 시작(대기)', () => {
-      const month = CFG.TARGET_DATES.length ? '' : (CFG.TARGET_MONTH === 'auto' ? parseMonth() : CFG.TARGET_MONTH);
+      const month = CFG.TARGET_DATES.length ? '' : (CFG.TARGET_MONTH === 'auto' ? parseMonth() : normMonth(CFG.TARGET_MONTH));
       if (!CFG.TARGET_DATES.length && !month) { log('시설예약기간을 못 읽었어요 — CFG.TARGET_MONTH를 직접 지정하세요'); return; }
       const openAt = resolveOpenAt();
       if (CFG.OPEN_AT === 'auto' && !openAt) { log('접수기간을 못 읽었어요 — CFG.OPEN_AT을 직접 지정하세요'); return; }
