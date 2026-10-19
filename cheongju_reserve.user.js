@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         청주 통합예약 - 흥덕축구공원 예약 도우미 (prototype)
 // @namespace    local.cheongju.reserve
-// @version      0.7.2
+// @version      0.7.3
 // @description  접수 시각(서버시간)에 맞춰 달의 모든 지정 요일을 날짜마다 탭 1개씩 병렬로 자동 신청
 // @match        https://ticket.cheongju.go.kr/www/*
 // @run-at       document-end
@@ -239,7 +239,7 @@
       const st = { armed: true, tries: 0, role: 'main', idx: 0, date: dates[0], startedAt, openAt, pending: [] };
       dates.slice(1).forEach((d, i) => { if (!openChild(d, i + 1, startedAt, openAt)) st.pending.push({ d, i: i + 1 }); });
       setState(st);
-      location.reload();
+      route(); // 새로고침 없이 바로 시작 (메인 탭이 자식 탭보다 늦어지지 않게)
     });
   }
   // 팝업이 막혀서 못 연 탭은 버튼으로 하나씩 열기 (버튼 클릭은 팝업이 허용됨)
@@ -470,7 +470,7 @@
   }
 
   /* ---------- 라우팅 ---------- */
-  (async () => {
+  async function route() {
     if (armed() && /페이지를\s*찾을\s*수\s*없|Sorry, the page you tried cannot be found/.test(pageText())) {
       // 신청 도중 오류 페이지(404)로 빠진 경우: 상세 페이지로 돌아가 이 날짜를 처음부터 다시 시도
       const st = getState() || {}, n = (st.recover || 0) + 1, url = st.detailUrl;
@@ -482,5 +482,6 @@
     if (path.endsWith('fcltyApplCalendarWebView.do')) return stepCalendar();
     if (path.endsWith('addFcltyApplWebView.do')) return stepInfo();
     if (path.endsWith('addFcltyApplWebSuccess.do')) return stepDone();
-  })();
+  }
+  route();
 })();
