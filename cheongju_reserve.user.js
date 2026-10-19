@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         청주 통합예약 - 흥덕축구공원 예약 도우미 (prototype)
 // @namespace    local.cheongju.reserve
-// @version      0.5
-// @description  접수 시작 시각에 맞춰 신청하기 → 날짜/시간 선택 → 약관동의 → 정보입력 → 다음을 자동으로 진행
+// @version      0.6
+// @description  대상 사이트의 서버시간(navyism 방식)에 맞춰 신청하기 → 날짜/시간 선택 → 약관동의 → 정보입력 → 다음을 자동으로 진행
 // @match        https://ticket.cheongju.go.kr/www/*
 // @run-at       document-end
 // @grant        none
@@ -12,7 +12,7 @@
 
   /* ================= 설정 (여기만 고치세요) ================= */
   const CFG = {
-    // 접수 시작 시각 (PC 시계 기준). 빈 문자열('')이면 시작 버튼 누르는 즉시 진행(테스트용)
+    // 접수 시작 시각 (대상 사이트 서버시간 기준, 한국시간). 빈 문자열('')이면 시작 버튼 누르는 즉시 진행(테스트용)
     OPEN_AT: '',//2026-11-19 09:00:00
 
     // 예약할 날짜, 그리고 우선순위 순서의 시간대 (앞에서부터 '예약가능'이면 선택)
@@ -29,7 +29,12 @@
     DRY_RUN: true,
 
     MAX_RELOAD: 150,   // 오픈 직후 신청하기가 안 열릴 때 새로고침 최대 횟수
-    RELOAD_GAP_MS: 350 // 새로고침 간격(너무 짧게 줄이지 마세요)
+    RELOAD_GAP_MS: 350, // 새로고침 간격(너무 짧게 줄이지 마세요)
+
+    // --- 서버시간 동기화 (0.6) ---
+    SYNC_URL: '/www/index.do', // 서버시간(Date 헤더)을 재는 같은 사이트 주소
+    SYNC_MAX_MS: 12000,        // 한 번 측정에 쓰는 최대 시간
+    LEAD_MS: null              // null=자동(왕복시간의 절반만큼 일찍 클릭), 숫자=고정 ms (0이면 서버시간 정각에 클릭)
   };
   /* ========================================================= */
 
@@ -109,21 +114,114 @@
     addBtn('▶ 시작(대기)', () => { setState({ armed: true, tries: 0 }); location.reload(); });
   }
 
+  /* ---------- 서버시간 동기화 (navyism 방식) ----------
+     대상 사이트가 응답에 실어 보내는 Date 헤더(초 단위로 잘린 서버 시각)를 여러 번 받아서
+     "서버시각 - PC시각" 오프셋을 구한다.
+       1) 요청 한 번마다 오프셋이 들어갈 구간 [S - 수신시각, S + 1초 - 송신시각] 을 얻고
+       2) 구간이 가장 많이 겹치는 곳을 고르고
+       3) 서버의 '초가 바뀌는 순간'에 맞춰 요청을 보내 구간을 이분탐색으로 좁힌다. */
+  const now = () => performance.timeOrigin + performance.now(); // PC 시각(ms, 단조 증가)
+  // <sync-core>
+  async function syncCore({ now, fetchDateMs, sleep, maxMs, onProgress }) {
+    const iv = [];
+    let minRtt = Infinity;
+    const t_start = now();
+    const probe = async () => {
+      const t0 = now();
+      const S = await fetchDateMs();   // 서버 Date 헤더(ms, 초 단위로 잘림) 또는 null
+      const t1 = now();
+      if (S == null) return false;
+      minRtt = Math.min(minRtt, t1 - t0);
+      iv.push({ lo: S - t1, hi: S + 1000 - t0 });
+      return true;
+    };
+    const best = () => {
+      let bc = -1, bl = 0, bh = 0;
+      for (const c of iv) {
+        const x = c.lo;
+        const cov = iv.filter(i => i.lo <= x && i.hi > x);
+        if (cov.length > bc) { bc = cov.length; bl = x; bh = Math.min(...cov.map(i => i.hi)); }
+      }
+      return bc < 0 ? null : { lo: bl, hi: bh, n: bc };
+    };
+    // 1단계: 거칠게 10번
+    for (let i = 0; i < 10 && now() - t_start < maxMs; i++) {
+      await probe();
+      await sleep(110 + Math.random() * 60);
+    }
+    // 2단계: 서버 초 경계에 맞춰 이분탐색
+    let b = best();
+    for (let k = 0; k < 14 && b && now() - t_start < maxMs; k++) {
+      if (b.hi - b.lo < minRtt + 10) break;
+      const o = (b.lo + b.hi) / 2;                  // 현재 추정 오프셋(서버 - PC)
+      const half = minRtt / 2;
+      const X = Math.ceil((now() + o + half + 30) / 1000) * 1000; // 다음 서버 '정각 초'
+      await sleep(Math.max(0, X - o - half - now())); // 서버가 그 초를 넘기는 순간에 도착하도록 발송
+      await probe();
+      b = best();
+      if (onProgress && b) onProgress(b, k);
+    }
+    if (!b) return null;
+    return { offset: (b.lo + b.hi) / 2, err: (b.hi - b.lo) / 2, rtt: minRtt, n: iv.length, at: Date.now() };
+  }
+  // </sync-core>
+
+  const SYNC_KEY = 'cjm_sync';
+  const loadSync = () => { try { const s = JSON.parse(sessionStorage.getItem(SYNC_KEY) || 'null'); return s && Date.now() - s.at < 10 * 60 * 1000 ? s : null; } catch { return null; } };
+  let SYNC = loadSync();
+  const serverNow = () => now() + (SYNC ? SYNC.offset : 0);
+  const fmtT = ms => { const d = new Date(Math.floor(ms)); const p = (n, w = 2) => String(n).padStart(w, '0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`; };
+  const fmtOfs = () => SYNC ? `PC보다 ${SYNC.offset >= 0 ? '+' : ''}${Math.round(SYNC.offset)}ms(±${Math.round(SYNC.err)})` : 'PC 시계 사용';
+  const fetchDateMs = async () => {
+    try {
+      const u = CFG.SYNC_URL + (CFG.SYNC_URL.includes('?') ? '&' : '?') + '_=' + Math.random().toString(36).slice(2);
+      const r = await fetch(u, { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' });
+      const d = r.headers.get('date');
+      const t = d ? Date.parse(d) : NaN;
+      return isNaN(t) ? null : t;
+    } catch { return null; }
+  };
+  async function doSync(msg) {
+    log(msg);
+    const r = await syncCore({ now, fetchDateMs, sleep, maxMs: CFG.SYNC_MAX_MS, onProgress: b => log(`${msg} (±${Math.round((b.hi - b.lo) / 2)}ms)`) });
+    if (r) {
+      SYNC = r; sessionStorage.setItem(SYNC_KEY, JSON.stringify(r));
+      log(`서버시간 동기화 완료: ${fmtOfs()}, 왕복 ${Math.round(r.rtt)}ms, 샘플 ${r.n}개`);
+    } else log('서버시간 측정 실패 — PC 시계로 진행');
+    return r;
+  }
+  addBtn('⏱ 서버시간 측정', () => doSync('서버시간 측정 중...'));
+
   /* ---------- 1단계: 상세 페이지에서 신청하기 ---------- */
   async function stepDetail() {
     const st = getState();
     const openAt = CFG.OPEN_AT ? new Date(CFG.OPEN_AT.replace(' ', 'T') + '+09:00').getTime() : 0;
-    while (Date.now() < openAt - 150) {
+    if (openAt) {
+      // 처음 한 번 측정, 오픈까지 1분 넘게 남았으면 오픈 25초 전에 한 번 더 측정
+      if (!SYNC && openAt - serverNow() > 3000) await doSync('서버시간 측정 중...');
+      if (openAt - serverNow() > 60000) {
+        while (armed() && openAt - serverNow() > 25000) {
+          log(`대기 ${Math.round((openAt - serverNow()) / 1000)}초 | 서버 ${fmtT(serverNow())} | ${fmtOfs()}${document.hidden ? ' | ⚠탭을 앞에 두세요' : ''}`);
+          await sleep(250);
+        }
+        if (!armed()) return;
+        await doSync('오픈 직전 재측정...');
+      }
+    }
+    // 왕복시간의 절반만큼 일찍 보내면 서버에는 정각에 도착
+    const lead = CFG.LEAD_MS == null ? Math.round((SYNC?.rtt || 0) / 2) : CFG.LEAD_MS;
+    const target = openAt ? openAt - lead : 0;
+    while (openAt && serverNow() < target - 150) {
       if (!armed()) return;
-      const s = Math.max(0, Math.round((openAt - Date.now()) / 1000));
-      log(`대기 중... ${s}초 후 시작`);
-      await sleep(openAt - Date.now() > 2000 ? 250 : 5);
+      log(`대기 ${Math.max(0, Math.round((openAt - serverNow()) / 100) / 10)}초 | 서버 ${fmtT(serverNow())} | ${fmtOfs()}${document.hidden ? ' | ⚠탭을 앞에 두세요' : ''}`);
+      await sleep(serverNow() < target - 2000 ? 100 : 5);
     }
     if (!armed()) return;
     // 정확한 시각까지 짧게 busy-wait
-    while (Date.now() < openAt) { await sleep(1); }
+    while (openAt && serverNow() < target) { await sleep(0); }
+    const clickedAt = serverNow();
     const btn = await waitFor(() => btnByText(/^신청하기$/), 1500, 10);
-    if (btn) { log('신청하기 클릭'); btn.click(); }
+    if (btn) { btn.click(); log(`신청하기 클릭 @서버 ${fmtT(clickedAt)}`); console.log('[예약도우미] 클릭 시각(서버)', fmtT(clickedAt), '목표', openAt ? fmtT(openAt) : '-'); }
     await sleep(CFG.RELOAD_GAP_MS + 450);
     // 아직 이 페이지면(오픈 전이거나 막힘) 새로고침 후 재시도
     if (armed() && location.pathname.endsWith('selectFcltyWebView.do')) {
@@ -215,7 +313,7 @@
 
   /* ---------- 라우팅 ---------- */
   (async () => {
-    if (!armed()) { log('대기(시작 전)'); return; }
+    if (!armed()) { log('대기(시작 전)' + (SYNC ? ' | 서버시간 ' + fmtOfs() : '')); return; }
     if (path.endsWith('selectFcltyWebView.do')) return stepDetail();
     if (path.endsWith('fcltyApplCalendarWebView.do')) return stepCalendar();
     if (path.endsWith('addFcltyApplWebView.do')) return stepInfo();
