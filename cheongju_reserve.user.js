@@ -46,7 +46,7 @@
     // --- 실전 대응 ---
     CLICK_GAP_MS: 400,     // 신청하기를 다시 누를 때 최소 간격 (서버에 폭주하지 않게)
     MAX_CLICKS: 60,        // 접수 전 튕김 등으로 신청하기를 다시 누르는 최대 횟수
-    QUEUE_MAX_MS: 600000,  // 순번대기(NetFUNNEL) 최대 대기 시간. 대기 중엔 절대 새로고침하지 않음
+    QUEUE_MAX_MS: 3600000,  // 순번대기(NetFUNNEL) 최대 대기 시간(60분). 대기 중엔 절대 새로고침하지 않고 통과할 때까지 기다림
     AJAX_WAIT_MS: 15000,   // 달력/시간표 로딩 최대 대기 (서버가 느릴 때)
     WATCHDOG_MS: 15000,    // 창이 이 시간 동안 멈춰 있으면 컨트롤러가 처음부터 다시 시작 (브라우저 오류 화면은 즉시 감지)
     STALL_MS: 25000,       // 접수 후 이 시간 동안 진행이 없으면(요청이 걸려 멈춤) 다시 시작. 최종 신청 단계는 2배 기다리고 다시 신청은 안 함
@@ -145,7 +145,7 @@
     try { localStorage.setItem(RES_PREFIX + d, JSON.stringify({ s, at: Date.now(), ...extra })); } catch {}
   }
   const readRes = d => { try { return JSON.parse(localStorage.getItem(RES_PREFIX + d) || 'null'); } catch { return null; } };
-  const finish = (s, extra = {}) => { report(s, { fin: true, ...extra }); patch({ armed: false }); beep(); };
+  const finish = (s, extra = {}) => { report(s, { fin: true, ...extra }); patch({ armed: false }); beep(/^✅/.test(s) ? 1 : 4); };  // 성공 1번, 실패/확인필요는 4번 울림
 
   /* ---------- 패널 ---------- */
   const panel = document.createElement('div');
@@ -168,7 +168,7 @@
     b.onclick = fn; bar.appendChild(b);
     return b;
   }
-  const beep = () => { try { const c = new AudioContext(), o = c.createOscillator(); o.connect(c.destination); o.frequency.value = 880; o.start(); setTimeout(() => o.stop(), 500); } catch {} };
+  const beep = (n = 1) => { try { const c = new AudioContext(); for (let i = 0; i < n; i++) { const o = c.createOscillator(); o.connect(c.destination); o.frequency.value = 880; o.start(c.currentTime + i * 0.7); o.stop(c.currentTime + i * 0.7 + 0.5); } } catch {} };
   early.forEach(m => console.log('[예약도우미]', m));
   logFn = log;
   const renderResults = () => {
@@ -482,8 +482,8 @@
             queued = true;
             if (Date.now() - last > 1000) { last = Date.now(); const qi = queueInfo(); log(`순번대기 중 ${qi} (${Math.round((Date.now() - t) / 1000)}초)`); report(`순번대기 중 ${qi}`); }
             if (Date.now() - t > CFG.QUEUE_MAX_MS) res = 'timeout';
-          } else if (!queued && Date.now() - t > 10000) res = 'silent';
-          else if (queued && Date.now() - t > 3000 && !q) res = Date.now() - t > 15000 ? 'silent' : null; // 대기 끝났는데 이동이 없음
+          } else if (!queued && Date.now() - t > 60000) res = 'silent';   // 순번창을 못 알아봐도 60초는 기다림(새로고침하면 순번 날아감)
+          else if (queued && Date.now() - t > 3000 && !q) res = Date.now() - t > 30000 ? 'silent' : null; // 대기 끝났는데 이동이 없음
         }
         if (!res) await sleep(30);
       }
@@ -616,10 +616,10 @@
     const st = getState();
     const m = lastAlert?.m || '';
     const failed = [...new Set([...(st.failed || []), st.slot].filter(Boolean))];
-    const left = CFG.SLOTS.filter(s => !failed.includes(s));
     patch({ stage: '', failed, calReload: 0 });
-    if (left.length && st.calUrl) { report(`선점됨(${st.slot}) → 다음 시간대 시도`); log('선점됨: ' + m); go('taken', st.calUrl); }
-    else finish('❌ 선점됨: ' + m.slice(0, 40));
+    // 선점되면 다른 시간대로 넘어가지 않고 알림만 (이 날짜는 해당 시간 아니면 의미 없음)
+    log('선점됨: ' + m);
+    finish('❌ 선점됨(' + (st.slot || '') + '): ' + m.slice(0, 40));
   }
 
   /* ---------- 4단계: 완료 ---------- */
