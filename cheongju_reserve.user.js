@@ -142,6 +142,9 @@
     // 2순위: 글자가 정확히 "다음"(+화살표)인 버튼
     return c.find(e => /^다음[>›»]?$/.test(txt(e))) || null;
   };
+  let unloading = false;
+  addEventListener('beforeunload', () => { unloading = true; });
+  addEventListener('pagehide', () => { unloading = true; });
   const clickNext = async () => {
     const n = await waitFor(findNext, 3000, 20);
     if (!n) { log('다음 버튼을 못 찾음'); report('다음 버튼 못 찾음'); beep(); return false; }
@@ -149,8 +152,8 @@
     log('다음 버튼 클릭: <' + n.tagName.toLowerCase() + ' type=' + (n.getAttribute('type') || '-') + '>');
     n.scrollIntoView({ block: 'center' });
     n.click();
-    await sleep(900);
-    if (location.href === before && n.form) { log('클릭이 안 먹혀 폼 제출 재시도'); try { n.form.requestSubmit(n); } catch { n.form.submit(); } }
+    await sleep(2500); // 서버가 느려도 이미 이동 중이면 두 번 제출하지 않도록 넉넉히 기다림
+    if (!unloading && location.href === before && n.form) { log('클릭이 안 먹혀 폼 제출 재시도'); try { n.form.requestSubmit(n); } catch { n.form.submit(); } }
     return true;
   };
 
@@ -329,6 +332,7 @@
 
   /* ---------- 1단계: 상세 페이지에서 신청하기 ---------- */
   async function stepDetail() {
+    setState({ ...getState(), detailUrl: location.pathname + location.search });
     const st = getState();
     const openAt = st.openAt || 0;
     const idx = st.idx || 0;
@@ -460,6 +464,12 @@
 
   /* ---------- 라우팅 ---------- */
   (async () => {
+    if (armed() && /페이지를\s*찾을\s*수\s*없|Sorry, the page you tried cannot be found/.test(pageText())) {
+      // 신청 도중 오류 페이지(404)로 빠진 경우: 상세 페이지로 돌아가 이 날짜를 처음부터 다시 시도
+      const st = getState() || {}, n = (st.recover || 0) + 1, url = st.detailUrl;
+      if (url && n <= 5) { setState({ ...st, recover: n, tries: 0 }); log(`오류 페이지 감지 — 처음부터 재시도 (${n}/5)`); await sleep(300 + 250 * n); location.replace(url); return; }
+      report('오류 페이지 — 복구 실패, 직접 확인 필요'); beep(); return;
+    }
     if (!armed()) { log('대기(시작 전)' + (SYNC ? ' | 서버시간 ' + fmtOfs() : '')); return; }
     if (path.endsWith('selectFcltyWebView.do')) return stepDetail();
     if (path.endsWith('fcltyApplCalendarWebView.do')) return stepCalendar();
